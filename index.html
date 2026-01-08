@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Neon Typer - Mobile</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #0d0d15;
+            color: white;
+            font-family: 'Courier New', Courier, monospace;
+            touch-action: none; /* Prevents zooming */
+        }
+
+        #gameCanvas {
+            display: block;
+            width: 100%;
+            height: 100vh;
+        }
+
+        /* The UI Overlay */
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; /* Let touches pass through to hidden input */
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        #score-board {
+            font-size: 20px;
+            color: #00ffcc;
+            text-shadow: 0 0 10px #00ffcc;
+        }
+
+        /* The Start Screen */
+        #start-screen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.85);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 10;
+            pointer-events: auto;
+        }
+
+        h1 {
+            font-size: 40px;
+            color: #ff0055;
+            text-transform: uppercase;
+            text-shadow: 0 0 20px #ff0055;
+            margin-bottom: 10px;
+        }
+
+        p {
+            color: #aaa;
+            margin-bottom: 30px;
+            text-align: center;
+            padding: 0 20px;
+        }
+
+        button {
+            padding: 15px 40px;
+            font-size: 20px;
+            background: #00ffcc;
+            color: #000;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            box-shadow: 0 0 15px #00ffcc;
+            font-weight: bold;
+        }
+
+        /* The Hidden Input for Mobile Keyboard */
+        #hidden-input {
+            position: absolute;
+            opacity: 0;
+            top: -1000px;
+        }
+        
+        /* Mobile keyboard pushes view up, this helps keep layout sane */
+        @media (max-height: 500px) {
+            #score-board { font-size: 16px; }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="ui-layer">
+        <div id="score-board">SCORE: 0 | WAVE: 1</div>
+    </div>
+
+    <div id="start-screen">
+        <h1>Neon Typer</h1>
+        <p>Type the words before they hit your ship.<br>Tap button to activate keyboard.</p>
+        <button id="start-btn" onclick="startGame()">START MISSION</button>
+    </div>
+
+    <input type="text" id="hidden-input" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const hiddenInput = document.getElementById('hidden-input');
+        const startScreen = document.getElementById('start-screen');
+        const scoreEl = document.getElementById('score-board');
+        const startBtn = document.getElementById('start-btn');
+
+        // Game State
+        let isPlaying = false;
+        let score = 0;
+        let wave = 1;
+        let lastTime = 0;
+        let spawnTimer = 0;
+        let spawnInterval = 2000; // ms
+
+        // Game Objects
+        let words = [];
+        let bullets = [];
+        let particles = [];
+        let targetWord = null; // The word currently being typed
+
+        // Word Dictionary (English)
+        const wordList = [
+            "code", "data", "link", "wifi", "byte", "pixel", "cache", "scan",
+            "logic", "input", "output", "server", "matrix", "binary", "system",
+            "access", "denied", "mobile", "screen", "router", "script", "python",
+            "vector", "stream", "buffer", "upload", "hacker", "cipher", "neural",
+            "global", "search", "widget", "socket", "cookie", "domain", "filter"
+        ];
+
+        // Resize Canvas
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        // Classes
+        class Word {
+            constructor(text) {
+                this.text = text;
+                this.remaining = text;
+                this.x = Math.random() * (canvas.width - 100) + 20;
+                this.y = -30;
+                this.speed = 0.5 + (wave * 0.1);
+                this.color = '#fff';
+            }
+
+            draw() {
+                ctx.font = "bold 24px Courier New";
+                
+                // Draw remaining part (White)
+                ctx.fillStyle = this.color;
+                ctx.fillText(this.remaining, this.x, this.y);
+
+                // Draw matched part (Green/Dim) logic would be here if we tracked full string visually
+                // For simplicity, we just chop the string
+                
+                // Draw a target marker if this is the active word
+                if (this === targetWord) {
+                    ctx.strokeStyle = '#ff0055';
+                    ctx.lineWidth = 2;
+                    ctx.strokeRect(this.x - 5, this.y - 25, ctx.measureText(this.remaining).width + 10, 35);
+                }
+            }
+
+            update(dt) {
+                this.y += this.speed;
+                if (this.y > canvas.height - 50) {
+                    gameOver();
+                }
+            }
+        }
+
+        class Bullet {
+            constructor(tx, ty) {
+                this.x = canvas.width / 2;
+                this.y = canvas.height - 20;
+                this.tx = tx;
+                this.ty = ty;
+                this.speed = 15;
+                this.active = true;
+                
+                // Calculate angle
+                const dx = tx - this.x;
+                const dy = ty - this.y;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+                this.vx = (dx / dist) * this.speed;
+                this.vy = (dy / dist) * this.speed;
+            }
+
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+                
+                // Simple collision or out of bounds (visual only mostly)
+                if (this.y < 0 || this.y > canvas.height) this.active = false;
+            }
+
+            draw() {
+                ctx.fillStyle = '#00ffcc';
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, 4, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        class Particle {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.vx = (Math.random() - 0.5) * 5;
+                this.vy = (Math.random() - 0.5) * 5;
+                this.life = 1.0;
+                this.color = `hsl(${Math.random()*360}, 100%, 50%)`;
+            }
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+                this.life -= 0.05;
+            }
+            draw() {
+                ctx.globalAlpha = this.life;
+                ctx.fillStyle = this.color;
+                ctx.fillRect(this.x, this.y, 3, 3);
+                ctx.globalAlpha = 1;
+            }
+        }
+
+        // Input Handling
+        hiddenInput.addEventListener('input', (e) => {
+            if (!isPlaying) return;
+            
+            // Get the last character typed
+            const char = e.data; 
+            if (!char) return; // Backspace or weird event
+            
+            const key = char.toLowerCase();
+            processInput(key);
+
+            // Clear input so it doesn't get clogged
+            hiddenInput.value = "";
+        });
+
+        function processInput(key) {
+            // If we have a target locked
+            if (targetWord) {
+                if (targetWord.remaining.startsWith(key)) {
+                    shoot(targetWord);
+                    targetWord.remaining = targetWord.remaining.substring(1);
+                    if (targetWord.remaining.length === 0) {
+                        destroyWord(targetWord);
+                        targetWord = null;
+                    }
+                }
+            } else {
+                // Find a new target that starts with this key
+                // Prioritize the one closest to bottom (highest Y)
+                let candidate = null;
+                let maxY = -100;
+
+                words.forEach(w => {
+                    if (w.remaining.startsWith(key)) {
+                        if (w.y > maxY) {
+                            maxY = w.y;
+                            candidate = w;
+                        }
+                    }
+                });
+
+                if (candidate) {
+                    targetWord = candidate;
+                    shoot(targetWord);
+                    targetWord.remaining = targetWord.remaining.substring(1);
+                    if (targetWord.remaining.length === 0) {
+                        destroyWord(targetWord);
+                        targetWord = null;
+                    }
+                }
+            }
+        }
+
+        function shoot(word) {
+            bullets.push(new Bullet(word.x, word.y));
+            // Sound effect could go here
+        }
+
+        function destroyWord(word) {
+            score += 10 * wave;
+            scoreEl.innerText = `SCORE: ${score} | WAVE: ${wave}`;
+            
+            // Create explosion
+            for(let i=0; i<10; i++) {
+                particles.push(new Particle(word.x, word.y));
+            }
+
+            // Remove from array
+            words = words.filter(w => w !== word);
+
+            // Increase difficulty slightly
+            if (score % 50 === 0) {
+                wave++;
+                spawnInterval = Math.max(500, 2000 - (wave * 100));
+            }
+        }
+
+        function gameOver() {
+            isPlaying = false;
+            startScreen.style.display = 'flex';
+            document.querySelector('#start-screen h1').innerText = "GAME OVER";
+            document.querySelector('#start-screen p').innerText = `Final Score: ${score}`;
+            startBtn.innerText = "RETRY";
+            hiddenInput.blur(); // Hide keyboard
+        }
+
+        function startGame() {
+            // Reset state
+            words = [];
+            bullets = [];
+            particles = [];
+            score = 0;
+            wave = 1;
+            targetWord = null;
+            scoreEl.innerText = `SCORE: 0 | WAVE: 1`;
+            spawnInterval = 2000;
+
+            // UI
+            startScreen.style.display = 'none';
+            isPlaying = true;
+            
+            // Focus input for mobile keyboard
+            hiddenInput.value = "";
+            hiddenInput.focus();
+            
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Main Loop
+        function gameLoop(timestamp) {
+            if (!isPlaying) return;
+
+            const dt = timestamp - lastTime;
+            lastTime = timestamp;
+
+            // Clear Screen
+            ctx.fillStyle = '#0d0d15';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Draw Player Ship
+            ctx.fillStyle = '#00ffcc';
+            ctx.beginPath();
+            ctx.moveTo(canvas.width/2, canvas.height - 50);
+            ctx.lineTo(canvas.width/2 - 20, canvas.height - 10);
+            ctx.lineTo(canvas.width/2 + 20, canvas.height - 10);
+            ctx.fill();
+
+            // Spawning
+            if (timestamp - spawnTimer > spawnInterval) {
+                const text = wordList[Math.floor(Math.random() * wordList.length)];
+                words.push(new Word(text));
+                spawnTimer = timestamp;
+            }
+
+            // Update & Draw Words
+            words.forEach(w => {
+                w.update();
+                w.draw();
+            });
+
+            // Update & Draw Bullets
+            bullets.forEach((b, index) => {
+                b.update();
+                b.draw();
+                if (!b.active) bullets.splice(index, 1);
+            });
+
+            // Update & Draw Particles
+            particles.forEach((p, index) => {
+                p.update();
+                p.draw();
+                if (p.life <= 0) particles.splice(index, 1);
+            });
+
+            // Keep focus on input (sometimes mobile loses it)
+            if (document.activeElement !== hiddenInput) {
+                hiddenInput.focus();
+            }
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Prevent accidental scrolling on mobile
+        document.body.addEventListener('touchmove', function(e) { e.preventDefault(); }, { passive: false });
+
+    </script>
+</body>
+  </html>
+  
